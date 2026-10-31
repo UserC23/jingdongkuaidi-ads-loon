@@ -67,7 +67,7 @@ Loon → 设置 → **MitM** → 打开开关
 Loon → 配置 → 插件 → 右上角 `+` → 从 URL 添加：
 
 ```
-https://fastly.jsdelivr.net/gh/UserC23/jdkdads-loon@345d1610521ff079a746c4e4ff27f5129ad9ce6f/JDKDAds.plugin
+https://fastly.jsdelivr.net/gh/UserC23/jdkdads-loon@a758e302f665c63032bc4368d5a312f6cc8bc2cc/JDKDAds.plugin
 ```
 
 > **请用上面这个固定 commit 地址，不要用 `@main`。**
