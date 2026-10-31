@@ -1,0 +1,6 @@
+# 统一 LF，避免规则文件被 Windows 转成 CRLF 后在 iOS 客户端里解析异常
+* text=auto eol=lf
+*.plugin text eol=lf
+*.list   text eol=lf
+*.md     text eol=lf
+*.py     text eol=lf

@@ -1,0 +1,51 @@
+# 京东快递 埋点精简列表（可选）
+
+**这不是去广告列表。**
+
+京东快递的广告走的是业务网关 `lop-proxy.jd.com` 的 JSON，和业务同域，
+拦域名等于拦业务 —— 所以本仓库没有「广告域名列表」这种东西。
+
+这份列表只做一件事：掐掉**埋点上报**。抓包基线里埋点占了 674 条请求中的 300 条左右，
+纯粹是噪音，拦了不影响任何功能，省电省流量。
+
+适用：Surge / Shadowrocket / Stash / Loon（作为 remote rule 引用）
+
+Quantumult X 用户注意：`DOMAIN` → `HOST`，`DOMAIN-SUFFIX` → `HOST-SUFFIX`
+
+---
+
+## 默认开启的 5 条
+
+# 京东埋点主网关（本次抓包 203 条，占总量 30%）
+DOMAIN,saturn.jd.com,REJECT
+
+# 埋点（本次抓包 86 条）
+DOMAIN-SUFFIX,uranus.jd.com,REJECT
+
+# 行为上报
+DOMAIN,cactus.jd.com,REJECT
+
+# 埋点黑洞（接收端）
+DOMAIN,blackhole.m.jd.com,REJECT
+
+# 营销埋点 sgm
+DOMAIN,sgm-w.jd.com,REJECT
+
+---
+
+## 想更激进再开（默认关闭，有副作用）
+
+# 活动页埋点与规则下发。注意：这个域下还有 /event/getRule，
+# 拦整个域可能让 H5 活动页异常，介意就别开。
+# DOMAIN,h5speed.m.jd.com,REJECT
+
+---
+
+## 明确不拦
+
+# jra.jd.com          风控指纹（jsTk.do），拦了有触发风控风险
+# sdkfp.jd.com        设备指纹
+# wlmonitor.m.jd.com  登录监控
+# wlogin.m.jd.com     登录
+# un.m.jd.com         账号跳转
+# sgm-m.jd.com        埋点配置下发（拦了可能连带活动页异常）

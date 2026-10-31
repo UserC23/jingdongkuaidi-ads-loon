@@ -1,0 +1,7 @@
+# 抓包原始文件与旧仓库备份，不入库
+_backup/
+*.har
+*.har.gz
+__pycache__/
+*.pyc
+.DS_Store

@@ -1,0 +1,159 @@
+#!name=京东快递 去广告
+#!desc=v1。基于京东快递 1.7.7（iOS）真机抓包 674 条请求分析。首页「为您推荐」瀑布流里 60 张卡有 46 张是第三方联合会员广告，另有零售商品导购卡；本插件按卡片类型定点删除，并置空投放决策接口。需开启 MITM 并信任证书。
+#!author=UserC23
+#!homepage=https://github.com/UserC23/jdkdads-loon
+#!date=2026-10-31
+#!category=广告拦截
+
+# ─────────────────────────────────────────────────────────────
+# 这份插件为什么长这样（先看结论，再决定开哪几段）
+#
+#   抓包结论一：京东快递没有用第三方广告 SDK。
+#     674 条请求全部落在 jd.com / jdl.com / 360buyimg.com 自有域名下，
+#     没有 1RTB、穿山甲、TanX 之类的影子。所以「按域名拦广告」这条路
+#     在这里是空的 —— 域名层没有敌人，广告全在业务接口的 JSON 里。
+#
+#   抓包结论二：真正的广告位是首页那个「为您推荐」瀑布流。
+#     接口 lop-proxy.jd.com/getHomePageFeedCards 一次返回 60 张卡：
+#       46 张 权益免费领  cardType=6  第三方联合会员（腾讯视频 8.3 折…）
+#        8 张 超值券包    cardType=1  付费券包推销
+#        4 张 年卡/亲情卡 cardType=2/3/4/5  自家付费产品
+#        2 张 零售商品    cardType=7  跳 djg.jd.com 京东商城导购
+#     前两类和第四类才是刷屏的广告，插件默认删掉的正是这三类里的
+#     「权益免费领 + 零售商品」（60 → 12 张），只留自家快递卡券。
+#
+#   抓包结论三：还有一条专门做投放的决策通道。
+#     lop-proxy.jd.com//decision           sceneKey=jdl_home_feed_fwj_card
+#     lop-proxy.jd.com/smartmp/querySmartDecision  sceneKey=h5_rece_card_banner
+#     这两个接口本次都返回空 data（没投中），但它是广告下发的总闸。
+#     置空 data 等于告诉 App「这次没有可投的」，比拦域名精准得多。
+#
+#   抓包结论四：不能整包 reject。
+#     京东这套接口统一是 {"code":1,"content":{...},"success":true}，
+#     整包返回 {} 会让 App 走进错误分支（弹提示 / 一直重试）。
+#     所以这里全部用 response-body-json-jq 就地改字段，保持外壳完整。
+#
+# 使用前提（缺一不可）
+#   1. Loon 里打开 MITM
+#   2. 装好证书，并在「设置 → 通用 → 关于本机 → 证书信任设置」里
+#      打开完全信任（只在「VPN与设备管理」里装了不算）
+#   3. 京东快递 App 上滑彻底杀掉再重开（响应有缓存，切后台不生效）
+# ─────────────────────────────────────────────────────────────
+
+[MITM]
+# 只解密 lop-proxy.jd.com —— 京东快递的业务接口全在这一个网关上。
+# 刻意不写 *.jd.com：那会把 api.m.jd.com、img*.360buyimg.com 全拉进
+# 解密范围，耗电明显，而且对去广告没有任何增益。
+#
+# 例外：如果你想用下面「到家店铺广告」那条可选规则，再把
+# api.m.jd.com 加进来。
+hostname = lop-proxy.jd.com
+
+[Rewrite]
+# ═════════════════════════════════════════════════════════════
+# A 级｜投放决策通道 —— 默认开启，收益最大、风险最小
+# 把 data 置成空数组，App 认为「本次无广告可投」，
+# 外层 code/message 都保留，不会触发错误分支。
+# ═════════════════════════════════════════════════════════════
+
+^https?://lop-proxy\.jd\.com/+decision response-body-json-jq 'if (.data|type)=="array" then .data=[] else . end'
+^https?://lop-proxy\.jd\.com/smartmp/querySmartDecision response-body-json-jq 'if (.data|type)=="array" then .data=[] else . end'
+
+# ═════════════════════════════════════════════════════════════
+# B 级｜首页「为您推荐」瀑布流 —— 默认开启
+#
+# 按子对象名删卡，不按 cardType 数字删：
+# 数字是后端排版的枚举，改版会变；子对象名是渲染器认的字段，
+# 变了就必须同时改客户端，反而更稳。
+#
+#   retailProductCard  零售商品导购（跳 djg.jd.com 京东商城）→ 删
+#   freeRightCard      权益免费领（腾讯视频等联合会员）        → 删
+#   其余（券包/年卡/E卡/亲情卡）保留，因为那是京东快递自家的
+#   付费产品，不是第三方广告，有人确实要用。
+#
+# 实测：60 张 → 12 张，响应体 24.9KB → 4.4KB
+# ═════════════════════════════════════════════════════════════
+
+^https?://lop-proxy\.jd\.com/getHomePageFeedCards response-body-json-jq 'if (.content.cardList|type)=="array" then .content.cardList |= map(select(((type=="object" and (has("retailProductCard") or has("freeRightCard")))|not))) else . end'
+
+# ═════════════════════════════════════════════════════════════
+# C 级｜首页运营位 —— 默认开启
+#
+# homeBanner   顶部轮播图（纯广告位）
+# homeYingxiao 营销位（名字就叫营销）
+#
+# 刻意不动这几个：
+#   homeTeseji  特色寄件（寄生鲜/寄港澳，是功能入口）
+#   homeGongneng 功能区
+#   homeNotice  公告
+# 本次抓包里它们都是空数组，删不删没区别；但线上随时会下发真实内容，
+# 而那不是广告，删了属于误伤。
+# ═════════════════════════════════════════════════════════════
+
+^https?://lop-proxy\.jd\.com/+queryHomeMainInfo response-body-json-jq 'if (.content|type)=="object" then .content.homeBanner=[] | .content.homeYingxiao=[] else . end'
+
+# ═════════════════════════════════════════════════════════════
+# D 级｜按需开启 —— 默认全部关闭
+# 每一段都是「整块清空」，清了就是空白，不会报错，但功能也没了。
+# 用哪段就把该行前面的 # 去掉，改完记得重进 App。
+# ═════════════════════════════════════════════════════════════
+
+# D1. 「我的」页推广入口（我的公益 / 包裹的旅行 / 秒送商家入驻 / POP商家入驻）
+#     清空后这一排入口直接消失。想留功能入口就别开。
+# ^https?://lop-proxy\.jd\.com/+moduleList response-body-json-jq 'if (.content|type)=="object" then .content.minePromotion=[] else . end'
+
+# D2. 京彩 tab 的活动 banner（拼团助力失败 banner / 积分夺宝）
+# ^https?://lop-proxy\.jd\.com/program/findTestBanners response-body-json-jq 'if (.data|type)=="object" then .data.itemList=[] else . end'
+
+# D3. 秒杀列表（0.01 元快递券那排）
+#     这是营销，但也是真优惠，想抢券别开。
+# ^https?://lop-proxy\.jd\.com/flashsale/flashSaleList response-body-json-jq 'if (.content|type)=="array" then .content=[] else . end'
+
+# D4. 第三方联合会员权益（腾讯视频 / 爱奇艺 那一整页）
+# ^https?://lop-proxy\.jd\.com/thirdPartyRights/rightsList response-body-json-jq 'if (.content|type)=="object" then .content.thirdPartyRight=[] else . end'
+
+# D5. 服务加购推荐流（空调维修 / 加氟 / 冰箱检测）
+#     这是京东服务+的导流位，清空后该模块空白。
+# ^https?://lop-proxy\.jd\.com/getServicePlusFeed response-body-json-jq 'if (.content|type)=="object" then .content.productList=[] else . end'
+
+# D6. 首页「为您推荐」整块清空（比 B 级更狠，B 级和这条二选一）
+#     清空后推荐流一个卡片都不剩，页面留白。
+# ^https?://lop-proxy\.jd\.com/getHomePageFeedCards response-body-json-jq 'if (.content.cardList|type)=="array" then .content.cardList=[] else . end'
+
+# D7. 到家（小时达）店铺列表里的竞价广告店
+#     抓包里 isAd 全是 0，没有实际样本，属于预防性规则。
+#     启用前必须把 api.m.jd.com 加进上面的 [MITM] hostname。
+# ^https?://api\.m\.jd\.com/client\.action\?functionId=hours_pub_store_page response-body-json-jq 'if (.result.data|type)=="array" then .result.data |= map(if (.data|type)=="array" then .data |= map(if (.storeList|type)=="array" then .storeList |= map(select(((.commonSrvMap.isAd // 0)|tostring) != "1")) else . end) else . end) else . end'
+
+[Rule]
+# ═════════════════════════════════════════════════════════════
+# 域名层：本次抓包没有可拦的广告域名
+#
+# 674 条请求里没有一条是第三方广告 SDK。京东快递的广告是自己家的
+# 广告平台（京准通）通过 lop-proxy 下发的 JSON，走的是业务域名，
+# 拦域名等于拦业务，所以这一段故意留空。
+#
+# 下面几条是「埋点瘦身」，不是去广告。抓包里 saturn.jd.com/log/sdk
+# 一家就占了 203 条请求（占总量 30%），纯上报、不拦也不影响功能。
+# 介意耗电/流量的可以打开，介意统计口径的别动。
+# ═════════════════════════════════════════════════════════════
+
+# 京东埋点主网关（203 条 / 本次抓包最大噪音源）
+# DOMAIN,saturn.jd.com,REJECT
+# 行为上报
+# DOMAIN,cactus.jd.com,REJECT
+# 埋点黑洞（接收端）
+# DOMAIN,blackhole.m.jd.com,REJECT
+# 营销埋点（sgm）
+# DOMAIN,sgm-w.jd.com,REJECT
+
+# ═════════════════════════════════════════════════════════════
+# 明确不拦
+#   jra.jd.com            风控指纹（jsTk.do）
+#   sdkfp.jd.com          设备指纹
+#   wlogin.m.jd.com       登录
+#   un.m.jd.com           账号跳转
+#   wlmonitor.m.jd.com    登录监控
+#   sgm-m.jd.com          埋点配置下发（拦了可能连带活动页异常）
+# 拦指纹类域名有触发风控的风险，收益为零。
+# ═════════════════════════════════════════════════════════════
