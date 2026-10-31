@@ -1,7 +1,7 @@
 #!name=京东快递 去广告
 #!desc=v2。基于京东快递 1.7.7（iOS）三次真机抓包：常驻 674 条 + 冷启动 1001 条 + 冷启动基线 1051 条。开屏广告走投放决策接口 sceneKey=jdl_splash_screen，首页「为您推荐」60 张卡里 46 张是第三方联合会员、启动时另弹一个「新人弹窗」，投放通道还会往推荐流塞 6 张京东商城导购卡。本插件按场景与字段定点清除，需开启 MITM 并信任证书。
 #!author=UserC23
-#!homepage=https://github.com/UserC23/jdkdads-loon
+#!homepage=https://github.com/UserC23/jingdongkuaidi-ads-loon
 #!date=2026-10-31
 #!category=广告拦截
 

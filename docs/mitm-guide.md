@@ -43,7 +43,7 @@ python tools/analyze_har.py 你的抓包.har --check
 1. Loon → 配置 → 插件 → 右上角 `+` → 从 URL 添加：
 
 ```
-https://fastly.jsdelivr.net/gh/UserC23/jdkdads-loon@<commit-sha>/JDKDAds.plugin
+https://fastly.jsdelivr.net/gh/UserC23/jingdongkuaidi-ads-loon@<commit-sha>/JDKDAds.plugin
 ```
 
 2. 确认插件开关为**启用**
