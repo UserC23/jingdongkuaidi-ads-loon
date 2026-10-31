@@ -185,7 +185,7 @@ python tools/analyze_har.py 抓包.har --verify
 输出字节数变化：
 
 ```
---- 第 145 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
+--- 第 129 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
     ✓ /getHomePageFeedCards    24976B → 4373B (-20603)  卡片 60 → 12
 ```
 

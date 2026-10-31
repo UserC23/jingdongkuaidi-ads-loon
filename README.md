@@ -122,7 +122,7 @@ python tools/analyze_har.py 抓包.har --verify    # 把插件里启用的 jq �
 `--verify` 直接解析 `JDKDAds.plugin` 里的 `response-body-json-jq` 行，输出：
 
 ```
---- 第 145 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
+--- 第 129 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
     ✓ /getHomePageFeedCards    24976B → 4373B (-20603)  卡片 60 → 12
 ```
 
