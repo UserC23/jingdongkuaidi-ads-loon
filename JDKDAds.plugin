@@ -1,5 +1,5 @@
 #!name=京东快递 去广告
-#!desc=v2。基于京东快递 1.7.7（iOS）两次真机抓包：常驻使用 674 条 + 冷启动 1001 条。开屏广告走投放决策接口 sceneKey=jdl_splash_screen，首页「为您推荐」60 张卡里 46 张是第三方联合会员、启动时另弹一个「新人弹窗」。本插件按场景与字段定点清除，需开启 MITM 并信任证书。
+#!desc=v2。基于京东快递 1.7.7（iOS）三次真机抓包：常驻 674 条 + 冷启动 1001 条 + 冷启动基线 1051 条。开屏广告走投放决策接口 sceneKey=jdl_splash_screen，首页「为您推荐」60 张卡里 46 张是第三方联合会员、启动时另弹一个「新人弹窗」，投放通道还会往推荐流塞 6 张京东商城导购卡。本插件按场景与字段定点清除，需开启 MITM 并信任证书。
 #!author=UserC23
 #!homepage=https://github.com/UserC23/jdkdads-loon
 #!date=2026-10-31
@@ -9,7 +9,7 @@
 # 这份插件为什么长这样（先看结论，再决定开哪几段）
 #
 #   抓包结论一：京东快递没有用第三方广告 SDK。
-#     两次抓包共 1675 条请求，全部落在 jd.com / jdl.com / 360buyimg.com
+#     三次抓包共 2726 条请求，全部落在 jd.com / jdl.com / 360buyimg.com
 #     自有域名下，没有 1RTB、穿山甲、TanX 之类的影子。所以「按域名拦广告」
 #     这条路在这里是空的 —— 域名层没有敌人，广告全在业务接口的 JSON 里。
 #
@@ -24,15 +24,17 @@
 #     （搜索框气泡 / 搜索页 banner / 寄件收件卡片 banner 等）。
 #     这两个接口是广告下发的总闸，把 data 置空 = 「本次无广告可投」。
 #
-#     实测对照（同一个账号，前后两次抓包）：
-#       没装插件  jdl_splash_screen → data[1]，557B，一条 555KB 的
-#                 双 11 会场大图（riskimg.360buyimg.com）
-#       装了插件  jdl_splash_screen → data[]，85B，什么都没有
-#     这是这份插件最直接的一次 A/B。
+#     开屏是「时投时不投」的：三次抓包里只有一次真的投了
+#     （data[1]，557B，一条 555KB 的双 11 会场大图，
+#       图在 riskimg.360buyimg.com，点进去跳 pro.m.jd.com/mall/active/…），
+#     另外两次同一个场景都返回 data[]。所以别指望一次抓包就能复现，
+#     也别把「某次没看到开屏」当成插件生效的证据 ——
+#     真正的证据是这三次里 decision 的 data 全都被置空，且
+#     装插件那次 riskimg 素材图下载 14 张 → 0 张。
 #
 #   抓包结论三：启动时真正会弹出来的，是「新人弹窗」。
 #     //home/queryNewPersonSceneDisplayContent 返回一整屏图片 + 领券链接
-#     （本次抓到的是「新人弹窗-快运-8折」，跳 jingcai-h5 领券）。
+#     （三次抓包里都是「新人弹窗-快运-8折」，跳 jingcai-h5 领券）。
 #     它是独立接口，不走决策通道，所以 A 级规则管不到它，要单独处理（A2）。
 #
 #   抓包结论四：首页「为您推荐」瀑布流是广告主战场。
@@ -42,6 +44,11 @@
 #        4 张 年卡/亲情卡 saleCard             自家付费产品
 #        2 张 零售商品    retailProductCard    跳 djg.jd.com 京东商城导购
 #     默认删掉「权益免费领 + 零售商品」（60 → 12 张）。
+#
+#     除了接口里的 60 张，投放通道还会往里插卡：冷启动基线那次
+#     jdl_home_feed_card 塞了 6 条，5 条是京东商城双 11 会场
+#     （pro.m.jd.com/mall/active/…），1 条问卷，1 条商品详情。
+#     这些走 A 级规则一起清掉 —— 它们根本不在 getHomePageFeedCards 里。
 #
 #   抓包结论五：不能整包 reject。
 #     这套接口统一是 {"code":1,"content":{...},"success":true}，
@@ -81,6 +88,12 @@ hostname = lop-proxy.jd.com
 #
 # 把 data 置成空数组，App 认为「本次无广告可投」，
 # 外层 code/message 都保留，不会触发错误分支。
+#
+# 实测（冷启动基线那次，投放真的命中了）：
+#   //decision        jdl_home_feed_card    5081B → 85B   清掉 6 条商城导购卡
+#   querySmartDecision jdl_detail_banner    1964B → 85B   清掉运单详情页 4 条 banner
+#   querySmartDecision jdl_search_*          597~634B → 85B  清掉搜索页气泡/文字链
+# 不命中的时候本来就是 85B，规则跑过去原样返回。
 #
 # 双分支写法：data 是数组就置 []，是对象就置 {}。
 # 单写 [] 的版本在老插件里跑了一年没问题，但一旦后端把 data 改成
@@ -232,18 +245,24 @@ hostname = lop-proxy.jd.com
 # ═════════════════════════════════════════════════════════════
 # 可选兜底：广告素材 CDN
 #
-# riskimg.360buyimg.com 在两次抓包里只被广告接口引用
+# riskimg.360buyimg.com 在三次抓包里只被广告接口引用
 # （//decision、querySmartDecision、thirdPartyRights、flashSaleList、
-#  getHomePageFeedCards、familyCard），没有一条业务图走它。
-# 那次没装插件的抓包里，它一口气下了 4 张图共 1.1MB：
-#   533KB / 423KB / 83KB / 64KB —— 全是投放素材。
+#  getHomePageFeedCards），没有一条业务图走它。
 #
-# 装上本插件后它一次都没被请求（决策接口已经返回空，App 没有素材可拉），
+# 首页 60 张卡的图床分开得很干净 —— 这说明它确实是「广告专用」：
+#   freeRightCard（已删）        → riskimg.360buyimg.com
+#   retailProductCard（已删）    → img14.360buyimg.com
+#   couponPackageCard（保留）    → wlimg10.360buyimg.com
+#   saleCard（保留）             → jfe.s3.cn-north-1.jdcloud-oss.com
+#
+# 实测：没装插件的冷启动那次，它下了 14 张图（单张最大 533KB）；
+# 装了插件之后 0 张 —— 决策接口没给素材，App 没有东西可拉。
+#
 # 所以这条默认关闭，属于「防回归」：万一哪天京东换了个客户端入口
 # 绕过决策接口直接下发图片，这里还能挡一道。
 #
-# 开这条的代价：券包 / 年卡这类还留着的卡片，如果哪天图床也搬到
-# riskimg 上，会显示成空白图。介意就别开。
+# 开这条的代价：秒杀列表（D3）和第三方权益页（D4）的图也在这个域名上，
+# 你如果没开 D3/D4、这些页面还留着，图会变成空白。
 # DOMAIN,riskimg.360buyimg.com,REJECT
 
 # ═════════════════════════════════════════════════════════════
