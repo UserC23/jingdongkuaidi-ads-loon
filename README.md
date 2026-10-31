@@ -58,13 +58,15 @@ Loon → 设置 → **MitM** → 打开开关
 Loon → 配置 → 插件 → 右上角 `+` → 从 URL 添加：
 
 ```
-https://fastly.jsdelivr.net/gh/UserC23/jdkdads-loon@main/JDKDAds.plugin
+https://fastly.jsdelivr.net/gh/UserC23/jdkdads-loon@345d1610521ff079a746c4e4ff27f5129ad9ce6f/JDKDAds.plugin
 ```
 
-> 这个地址始终指向最新版，但 jsDelivr 对 `@main` 有缓存，推送后短时间内可能仍返回旧文件，
-> `purge.jsdelivr.net` 也未必刷得掉（菜鸟那个仓库就踩过，卡了一个版本）。
-> 想要确定版本，把 `@main` 换成具体 commit SHA —— 在仓库 Commits 页面复制 40 位完整哈希，
-> 那个地址是内容寻址的，永远拿到确切版本。
+> **请用上面这个固定 commit 地址，不要用 `@main`。**
+> jsDelivr 对 GitHub 仓库的 `@main` 有缓存，推送后可能仍返回旧文件，
+> `purge.jsdelivr.net` 也未必刷得掉（同作者的 cnads-loon 就永久卡在 v1 过）。
+> 固定 SHA 是内容寻址的，永远拿到确切版本。
+>
+> 换成别的版本时，去仓库 Commits 页面复制对应提交的 40 位完整哈希替换即可。
 
 ### 3. 重启 App
 
