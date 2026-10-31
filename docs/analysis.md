@@ -12,9 +12,9 @@
 
 | 样本 | 开屏 `jdl_splash_screen` | 投放决策命中条数 | 广告素材图下载 |
 | --- | --- | --- | --- |
-| A 未装插件 / 常驻 | **`data[1]` 557B** | 6 | 4 张（1.1MB） |
+| A 未装插件 / 常驻 | **`data[1]` 557B** | 14 条 | 4 张（1.1MB） |
 | B 已装插件 / 冷启动 | `data[]` | 0 | **0 张** |
-| C 未装插件 / 冷启动 | `data[]` | **19** | 14 张 |
+| C 未装插件 / 冷启动 | `data[]` | **23 条** | 14 张 |
 
 ---
 
@@ -91,7 +91,7 @@ POST https://lop-proxy.jd.com//decision
 **所以不要把「某次没看到开屏」当成插件生效的证据。** 真正的证据是：
 
 - 三份样本里 `//decision` 的所有响应被规则置空，无一例外
-- C（未装）vs B（已装）对照：投放决策命中 19 条 → 0 条，广告素材图下载 14 张 → 0 张
+- C（未装）vs B（已装）对照：投放决策命中 23 条 payload → 0 条，广告素材图下载 14 张 → 0 张
 
 ### 15 个 sceneKey（三份抓包合并）
 
@@ -120,7 +120,7 @@ POST https://lop-proxy.jd.com//decision
 | `h5_send_card_banner` | 寄件页卡片 banner | 否 |
 | `h5_rece_card_banner` | 收件页卡片 banner | 否 |
 
-### C 样本实际投了 19 条，内容是这样
+### C 样本实际投了 23 条，内容是这样
 
 `jdl_home_feed_card` 6 条（5081B）—— 全部是京东商城导购，混进「为您推荐」里：
 
@@ -135,7 +135,8 @@ POST https://lop-proxy.jd.com//decision
 
 **这 6 条根本不在 `getHomePageFeedCards` 里** —— 光删接口里的 60 张卡，它们照样会插进推荐流。必须在 A 级一起清。
 
-`jdl_detail_banner` 4 条（1964B）—— 运单详情页底部：
+`jdl_detail_banner` 单次 4 条（1964B）—— 运单详情页底部。样本里这个页面进了两次，所以记了 8 条，
+按响应去重是 4 条：
 
 - `jingcai-h5.jd.com/index.html?source=yunxiangBanner_FD#/` 京彩商城首页
 - `wj-dongjian.jd.com/q/6addd2019f5f6100395e93f7` 问卷
