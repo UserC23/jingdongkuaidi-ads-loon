@@ -12,6 +12,7 @@ jq 改写规则在真实响应上到底做了什么。
     python analyze_har.py <file.har> --hosts         # 请求域名排行
     python analyze_har.py <file.har> --map           # lop-proxy 接口地图（解码请求体）
     python analyze_har.py <file.har> --feeds         # 首页「为您推荐」卡片类型统计
+    python analyze_har.py <file.har> --scenes        # 投广决策接口的 sceneKey（开屏在哪）
     python analyze_har.py <file.har> --scan-ads      # 遍历 JSON 定位广告字段
     python analyze_har.py <file.har> --verify [插件] # 跑插件里的 jq 规则，输出前后对比
     python analyze_har.py <file.har> --all           # 全部（不含 --verify）
@@ -273,6 +274,93 @@ def cmd_feeds(entries):
     return hit
 
 
+# 投放决策接口：广告（含开屏）下发的总闸。请求体里带 sceneKey。
+DECISION_ENDPOINTS = {
+    "/decision": "//decision",
+    "querySmartDecision": "smartmp/querySmartDecision",
+}
+
+# sceneKey 的人类可读名（冷启动抓包实测到的 15 个）
+SCENE_KIND = {
+    "jdl_splash_screen": "开屏广告 ← 就是它",
+    "app_jdkd_tab_benefit_popup": "底部「福利」tab 弹窗",
+    "app_jdkd_home_popup": "首页弹窗",
+    "jdl_home_feed_card": "首页推荐流插卡",
+    "jdl_home_feed_fwj_card": "首页推荐流服务加卡片",
+    "jdl_search_bubble": "搜索框气泡",
+    "jdl_search_textbanner": "搜索页文字链",
+    "jdl_search_follow_banner": "搜索结果关注 banner",
+    "jdl_search_follow_bubble": "搜索结果关注气泡",
+    "jdl_search_receive_banner": "收件搜索结果 banner",
+    "jdl_search_receive_bubble": "收件搜索结果气泡",
+    "h5_send_card_banner": "寄件页卡片 banner",
+    "h5_rece_card_banner": "收件页卡片 banner",
+    "jdl_detail_banner": "运单详情页 banner",
+    "jdl_detail_bubble": "运单详情页气泡",
+}
+
+
+def cmd_scenes(entries):
+    """把投放决策接口的 sceneKey 全部挖出来。
+
+    规则没法匹配请求体，所以改不了「只杀开屏、留着别的」——
+    但知道开屏叫 jdl_splash_screen，至少能确认它确实走这条通道、
+    以及整体置空 data 是否真的覆盖到了它。
+    """
+    seen = {}
+    for e in entries:
+        url = e["request"]["url"]
+        path = path_of(url)
+        hit = next((label for k, label in DECISION_ENDPOINTS.items() if k in path), None)
+        if not hit:
+            continue
+        body = req_text(e)
+        if not body.lstrip().startswith(("[", "{")):
+            continue
+        try:
+            payload = json.loads(body)
+        except Exception:
+            continue
+        items = payload if isinstance(payload, list) else [payload]
+        resp = try_json(e) or {}
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            key = it.get("sceneKey") or it.get("scene") or "?"
+            data = resp.get("data")
+            if isinstance(data, list):
+                state = f"data=[]" if not data else f"data[{len(data)}]  ← 有投放"
+            elif isinstance(data, dict):
+                state = f"data={{}}" if not data else f"data{{{len(data)}}}  ← 有投放"
+            else:
+                state = f"data={data!r}"
+            slot = seen.setdefault(key, {"n": 0, "ep": set(), "state": set()})
+            slot["n"] += 1
+            slot["ep"].add(hit)
+            slot["state"].add(state)
+
+    if not seen:
+        print("\n没抓到 //decision 或 querySmartDecision。")
+        print("这两个接口只在启动/进特定页面时打，抓包时要覆盖冷启动。")
+        return 0
+
+    print(f"\n=== 投放决策场景 {len(seen)} 个 ===")
+    # 开屏永远排第一 —— 它是这份插件最初存在的理由
+    for key in sorted(seen, key=lambda k: (k != "jdl_splash_screen", -seen[k]["n"], k)):
+        slot = seen[key]
+        kind = SCENE_KIND.get(key, "")
+        print(f"\n  {key}   x{slot['n']}")
+        if kind:
+            print(f"     {kind}")
+        print(f"     接口 {'、'.join(sorted(slot['ep']))}")
+        print(f"     响应 {' / '.join(sorted(slot['state']))}")
+
+    print("\n注意：规则只能匹配 URL，匹配不到请求体里的 sceneKey。")
+    print("所以「只去开屏、留别的」做不到，A 级规则是整条通道一起置空。")
+    print("上面显示 data 非空的场景，就是当前还在给你下发广告的。")
+    return len(seen)
+
+
 def cmd_scan_ads(entries):
     json_entries = [(e, try_json(e)) for e in entries]
     json_entries = [(e, o) for e, o in json_entries if o is not None]
@@ -408,6 +496,7 @@ def main():
     ap.add_argument("--hosts", action="store_true", help="请求域名排行")
     ap.add_argument("--map", action="store_true", help="lop-proxy 接口地图")
     ap.add_argument("--feeds", action="store_true", help="首页推荐流卡片类型统计")
+    ap.add_argument("--scenes", action="store_true", help="投放决策接口的 sceneKey（开屏在哪）")
     ap.add_argument("--scan-ads", action="store_true", help="遍历 JSON 定位广告字段")
     ap.add_argument("--verify", nargs="?", const="JDKDAds.plugin", metavar="PLUGIN",
                     help="跑插件里的 jq 规则做前后对比（默认 JDKDAds.plugin）")
@@ -423,7 +512,8 @@ def main():
         print(f"HAR 解析失败: {exc}", file=sys.stderr)
         return 2
 
-    flags = [args.check, args.hosts, args.map, args.feeds, args.scan_ads, args.all, args.verify is not None]
+    flags = [args.check, args.hosts, args.map, args.feeds, args.scenes, args.scan_ads, args.all,
+             args.verify is not None]
     if not any(flags):
         cmd_summary(entries)
         print("\n建议下一步：--check 确认 MITM 生效，--map 看接口，--feeds 看广告卡")
@@ -437,6 +527,8 @@ def main():
         cmd_map(entries)
     if args.all or args.feeds:
         cmd_feeds(entries)
+    if args.all or args.scenes:
+        cmd_scenes(entries)
     if args.all or args.scan_ads:
         cmd_scan_ads(entries)
     if args.verify is not None:

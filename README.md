@@ -4,39 +4,48 @@
 
 - 适用 App 版本：`1.7.7`（iOS，抓包基线）
 - 需要：**开启 MITM + 安装证书 + 在「证书信任设置」里打开完全信任**
-- 当前版本：**v1**
+- 当前版本：**v2**
 - 抓包分析：[docs/analysis.md](docs/analysis.md) ｜ 安装调试：[docs/mitm-guide.md](docs/mitm-guide.md)
 
 ---
 
 ## 这个插件能去掉什么
 
-抓包基线：**674 条请求 / 34 个域名**。核心发现是 —— **京东快递没有用第三方广告 SDK**，
-674 条请求全部落在 `jd.com` / `jdl.com` / `360buyimg.com` 自有域名下，
-没有 1RTB、穿山甲、TanX。所以这个插件几乎不写域名规则，全部在响应体里改字段。
+抓包基线两次：**常驻使用 674 条请求 / 34 域名**（未装插件）+ **冷启动 1001 条请求 / 44 域名**（已装 v1）。
+核心发现是 —— **京东快递没有用第三方广告 SDK**，请求全部落在 `jd.com` / `jdl.com` / `360buyimg.com`
+自有域名下，没有 1RTB、穿山甲、TanX。所以这个插件几乎不写域名规则，全部在响应体里改字段。
 
 | 广告位 | 实际情况 | 处置 | 默认 |
 |---|---|---|---|
+| 开屏广告 | 不是独立接口，是 `//decision` 的一个场景（`sceneKey=jdl_splash_screen`） | `data` 置空 | ✅ |
+| 启动「新人弹窗」 | 冷启动第 4 个请求就返回一整屏「新人弹窗-快运-8折」图片 | `contentDTO` 置 null | ✅ |
 | 首页「为您推荐」瀑布流 | 60 张卡里 **46 张**是「权益免费领」（腾讯视频 8.3 折这类第三方联合会员），2 张是跳京东商城的商品导购 | 按卡片子对象名删除 | ✅ |
-| 投放决策通道 | `//decision`、`smartmp/querySmartDecision` 两个 sceneKey 投放接口 | `data` 置空 | ✅ |
+| 投放决策通道 | `//decision`（5 场景）、`smartmp/querySmartDecision`（10 场景） | `data` 置空 | ✅ |
 | 首页运营位 | `homeBanner`（轮播图）、`homeYingxiao`（营销位） | 清空 | ✅ |
 | 我的页推广入口 | 我的公益 / 包裹的旅行 / 秒送商家入驻 / POP商家入驻 | 清空 | ❌ |
 | 京彩 tab banner | 拼团助力失败 banner、积分夺宝 | 清空 | ❌ |
 | 秒杀列表 | 0.01 元快递券 | 清空 | ❌ |
-| 第三方联合会员权益 | 腾讯视频 / 爱奇艺 整页 | 清空 | ❌ |
+| 第三方联合会员权益 | 腾讯视频 / 爱奇艺 整页（33 条） | 清空 | ❌ |
 | 服务加购推荐流 | 空调维修 / 加氟 / 冰箱检测 | 清空 | ❌ |
 | 到家竞价店 | `storeList[*].commonSrvMap.isAd` | 过滤 | ❌ |
+| 京彩 tab 红点气泡 | 「免费领」「上新」 | 按 contentCode 置空文案 | ❌ |
+| 首页模块开关 | banner / 券包 / 秒杀卡 / 积分商城 / 京豆 / 活动区 | 强制 false | ❌ |
+| 试用福袋 | 1 分钱奶粉 / 避孕套（京东商城导购） | 清空 | ❌ |
+| 年卡售卖页 | 8 个付费产品 | 清空 | ❌ |
 
-默认开启的三项，实测效果：
+默认开启的五项，实测效果：
 
 ```
-首页推荐流    60 张卡 → 12 张    响应体 24976B → 4373B
+开屏决策      557B → 85B     data[1] → data[]（那条 555KB 的双11 开屏大图不再下发）
+新人弹窗      840B → 193B    contentDTO → null
+首页推荐流   60 张卡 → 12 张  响应体 24976B → 4373B
 ```
 
 留下的 12 张是快递券包 / 年卡 / E卡 / 亲情卡 —— 京东快递自家的付费产品，不是第三方广告，删了属于误伤。
+想连券包一起删，把插件里 D12 那行放开，`12 张 → 4 张`。
 
-**没覆盖：开屏广告。** 本次抓包时 App 已在后台，没有冷启动样本。
-如果实际还有开屏，按 [docs/mitm-guide.md 第三节](docs/mitm-guide.md#三还有广告怎么办) 补一次冷启动抓包。
+**开屏怎么确认真的没了**：装上插件后清一次缓存、杀进程重开，抓包跑 `--scenes`：
+`jdl_splash_screen` 那行的 `data` 应该是 `[]`；同时 `riskimg.360buyimg.com`（广告图 CDN）应该一次都不出现。
 
 ---
 
@@ -105,6 +114,7 @@ python -m pip install jq
 python tools/analyze_har.py 抓包.har --check     # MITM 有没有真在解密（先跑这个）
 python tools/analyze_har.py 抓包.har --map       # lop-proxy 接口地图（解码 base64 请求体）
 python tools/analyze_har.py 抓包.har --feeds     # 首页卡片类型统计
+python tools/analyze_har.py 抓包.har --scenes    # 投放决策的 sceneKey，开屏排第一
 python tools/analyze_har.py 抓包.har --scan-ads  # 哪些字段像广告位
 python tools/analyze_har.py 抓包.har --verify    # 把插件里启用的 jq 规则跑一遍，看前后变化
 ```
@@ -112,8 +122,19 @@ python tools/analyze_har.py 抓包.har --verify    # 把插件里启用的 jq �
 `--verify` 直接解析 `JDKDAds.plugin` 里的 `response-body-json-jq` 行，输出：
 
 ```
---- 第 77 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
+--- 第 145 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
     ✓ /getHomePageFeedCards    24976B → 4373B (-20603)  卡片 60 → 12
+```
+
+`--scenes` 是 v2 新加的，用来回答「开屏到底在哪」：
+
+```
+=== 投放决策场景 15 个 ===
+
+  jdl_splash_screen   x1
+     开屏广告 ← 就是它
+     接口 //decision
+     响应 data=[]          ← 空就是已经挡住了
 ```
 
 `--check` 是前置条件：如果输出 `❌ 没有任何 HTTPS 请求`，说明 MITM 没生效，
@@ -126,9 +147,9 @@ python tools/analyze_har.py 抓包.har --verify    # 把插件里启用的 jq �
 ```
 JDKDAds.plugin                Loon 插件（主文件，直接装这个）
 rules/JDKDAds-track.list      埋点域名列表（可选，不是去广告，是瘦身）
-docs/analysis.md              抓包分析：674 条请求 / 34 域名 / 广告面清单
+docs/analysis.md              抓包分析：两次样本 / 开屏 sceneKey / 广告面清单
 docs/mitm-guide.md            安装、验证、定位残留广告、排错表
-tools/analyze_har.py          HAR 分析脚本（--check / --map / --feeds / --verify）
+tools/analyze_har.py          HAR 分析脚本（--check / --map / --feeds / --scenes / --verify）
 CHANGELOG.md                  版本记录
 ```
 

@@ -1,77 +1,147 @@
-# 京东快递 App HAR 抓包分析（v1 基线）
+# 京东快递 App HAR 抓包分析（v2）
 
 - 抓包设备：iPhone（`iPhone18,1`，iOS 27.0.1）
 - App：京东快递 `jdlogistic` 1.7.7，appId 1372
 - 抓包方式：Loon 全局代理导出 HAR
-- 样本：**674 条请求 / 34 个域名 / 246 条京东业务域**
+- 样本：
+  - **A. 常驻使用**：674 条请求 / 34 域名（**未装插件**，作为基线）
+  - **B. 冷启动**：1001 条请求 / 44 域名（**已装 v1 插件**，用来验证规则）
 
-原始 HAR 不入库（见 `.gitignore`），本文是分析结论。
+两次样本拼起来，才把「开屏」这件事看完整。原始 HAR 不入库（见 `.gitignore`），本文是分析结论。
 
 ---
 
 ## 一、先回答最关心的那个问题：域名层有没有东西可拦？
 
-**没有。**
+**几乎没有。**
 
-674 条请求全部落在这些域：
+两次抓包全部落在这些域：
 
-| 请求数 | 域名 | 性质 |
+| 请求数（B 样本） | 域名 | 性质 |
 | --- | --- | --- |
-| 203 | `saturn.jd.com` | 埋点上报（`/log/sdk`） |
-| 159 | `lop-proxy.jd.com` | **业务接口网关** |
-| 86 | `uranus.jd.com` | 埋点 |
-| 41 | `h5speed.m.jd.com` | 活动页埋点 / 规则 |
-| 22 | `api.m.jd.com` | 京东主网关（到家门店页等） |
-| 19 | `arsenal.jdl.com` | 图标 CDN |
-| 17 | `wmm.360buyimg.com` | 商品图 |
-| 其余 | `*.jd.com` / `*.jdl.com` / `*.360buyimg.com` / `*.jdcloud-oss.com` | 登录、风控、静态资源 |
+| 346 | `saturn.jd.com` | 埋点上报（`/log/sdk`） |
+| 218 | `lop-proxy.jd.com` | **业务接口网关** |
+| 123 | `uranus.jd.com` | 埋点 |
+| 47 | `h5speed.m.jd.com` | 活动页埋点 |
+| 35 | `sgm-m.jd.com` | 营销埋点（请求/响应都加密） |
+| 21 | `api.m.jd.com` | 京东主网关（到家门店页等） |
+| 20 | `arsenal.jdl.com` | 图标 CDN |
+| 其余 | `*.jd.com` / `*.jdl.com` / `*.360buyimg.com` / `*.jdcloud-oss.com` | 图片、静态资源、登录、风控 |
 
-**没有 1RTB、没有穿山甲/巨量、没有 TanX、没有汇川。** 京东快递的广告是自己家广告平台（京准通）通过业务网关下发的 JSON —— 也就是说，**广告和业务共用同一个域名**，按域名拦等于拦业务。
+**没有 1RTB、没有穿山甲/巨量、没有 TanX、没有汇川。** 京东快递的广告是自己家广告平台（京准通）通过业务网关下发的 JSON —— **广告和业务共用同一个域名**，按域名拦等于拦业务。
 
-这条结论直接决定了插件的形态：这个插件几乎不写 `[Rule]`，全部用 `response-body-json-jq` 在响应体里改字段。
+唯一例外是 `riskimg.360buyimg.com`：它在两次抓包里只被广告接口引用（`//decision`、`querySmartDecision`、`thirdPartyRights`、`flashSaleList`、`getHomePageFeedCards`、`familyCard`），没有一条业务图走它。A 样本里它一口气下了 4 张图 **共 1.1MB**（533KB / 423KB / 83KB / 64KB），全是投放素材。插件里给了一条默认关闭的兜底规则。
 
-> 对比参考：菜鸟那边 `1rtb.net` / `pglstatp-toutiao.com` / `tanx.com` 都在，域名层有明确目标；京东快递没有。
+> 对比参考：菜鸟那边 `1rtb.net` / `pglstatp-toutiao.com` / `tanx.com` 都在，域名层有明确目标；京东快递基本没有。
 
 ---
 
-## 二、业务接口都挤在一个网关上
+## 二、开屏广告：它是投放决策接口的一个场景
 
-`lop-proxy.jd.com` 一个域名装下了首页、我的、京彩、会员、任务、订单所有 JSON。典型特征：
+这是 v2 最重要的发现。
 
-- 全部 POST
-- 请求体是 **base64(JSON)**
-- 响应体是**明文 JSON**，统一外壳：`{"code":1,"content":{...},"success":true}`
-- 路径里会出现**双斜杠**：`https://lop-proxy.jd.com//decision`、`//moduleList`
+开屏**没有独立接口**。冷启动时 App 打的是同一个 `//decision`，只是请求体里的 `sceneKey` 不同：
 
-最后这条很关键，写正则时 `^https?://lop-proxy\.jd\.com/+decision` 里的 `/+` 就是为了兼容单双斜杠。
+```json
+POST https://lop-proxy.jd.com//decision
+[{
+  "sceneKey": "jdl_splash_screen",
+  "latLongitude": {"longitude":0.0,"latitude":0.0,"ip":"0.0.0.0"},
+  "deviceInfo": {"idfa":"","openudid":"856C5806-...","screen":"402x874",
+                 "mobileModel":"iPhone18,1","os":"iOS","osVersion":"27.0.1"},
+  "applicationInfo": {"version":"1.7.7","entry":"logistics"},
+  "appId": "1372"
+}]
+```
 
-### 接口地图（节选，完整用 `--map` 跑）
+### 前后两次抓包的直接对照
 
-| 路径 | 大小 | 作用 |
+| 样本 | `jdl_splash_screen` 的响应 | 结论 |
 | --- | --- | --- |
-| `/getHomePageFeedCards` | 24.9KB | **首页「为您推荐」瀑布流，60 张卡** |
-| `/getServicePlusFeed` | 6.5KB | 服务加购推荐流（空调维修/加氟…） |
-| `/flashsale/flashSaleList` | 8.7KB | 秒杀列表（0.01 元券） |
-| `/thirdPartyRights/rightsList` | 14.7KB | 第三方联合会员权益（腾讯视频…） |
-| `/program/findTestBanners` | 1.3KB | 京彩 tab 活动 banner |
-| `//queryHomeMainInfo` | 1.4KB | 首页运营位：`homeBanner` / `homeYingxiao` / `homeTeseji` |
-| `//moduleList` | 6.6KB | 我的页：`minePromotion` 推广入口 |
-| `queryMoreFeaturesSectionsNew` | 12.5KB | 特色寄件功能位（**不是广告，别删**） |
-| `//decision` | 0.1~5.3KB | **投放决策**：`sceneKey=jdl_home_feed_fwj_card` |
-| `/smartmp/querySmartDecision` | 0.6KB | **投放决策**：`sceneKey=h5_rece_card_banner` |
-| `//queryHomePageOrders` | 92.7KB | 订单列表，**响应加密改不了** |
-| `/order/searchOrderEnhance` | 0.1KB | 订单搜索，**响应加密改不了** |
+| A（没装插件） | `data[1]`，**557B** | 真下发了 1 条开屏素材 |
+| B（装了插件） | `data[]`，**85B** | 被规则清空，什么都没下发 |
+
+A 样本里那条素材长这样：
+
+```json
+{"action": {
+   "image": "https://riskimg.360buyimg.com/pop/jfs/t1/543849/15/13189/555886/6ae0b39aF61c44a10/06ed465984065a88.png",
+   "url": "https://pro.m.jd.com/mall/active/JFGrF75PxmRfeQx53tAXFkV6DRZ/index.html?babelChannel=ttt39"
+ },
+ "nodeId": "2115086717886140417",
+ "trackInfo": {"materialId":"...","sceneId":"2056971042542325760","source":1}}
+```
+
+一张 **555KB 的双 11 会场大图**，点击跳 `pro.m.jd.com/mall/active/...`。
+
+B 样本里 `riskimg.360buyimg.com` 的请求数是 **0** —— 决策接口没给素材，App 也就没东西可拉。这是「去开屏」最干净的一次闭环验证。
+
+### 15 个 sceneKey（两次抓包合并）
+
+`//decision`（5 个）：
+
+| sceneKey | 是什么 |
+| --- | --- |
+| `jdl_splash_screen` | **开屏广告** |
+| `app_jdkd_tab_benefit_popup` | 底部「福利」tab 弹窗 |
+| `app_jdkd_home_popup` | 首页弹窗 |
+| `jdl_home_feed_card` | 首页推荐流插卡 |
+| `jdl_home_feed_fwj_card` | 首页推荐流「服务加」卡片 |
+
+`smartmp/querySmartDecision`（10 个，全是搜索/寄件页的广告位）：
+
+`jdl_search_bubble`、`jdl_search_textbanner`、`jdl_search_follow_banner`、`jdl_search_follow_bubble`、`jdl_search_receive_banner`、`jdl_search_receive_bubble`、`h5_send_card_banner`、`h5_rece_card_banner`、`jdl_detail_banner`、`jdl_detail_bubble`
+
+### 为什么是「整条通道一起清空」
+
+Loon 的规则只能匹配 **URL**，匹配不到请求体里的 `sceneKey`。所以「只杀开屏、留着别的」在客户端层面做不到。
+
+好在这 15 个场景**无一例外都是商业投放**，没有一个是功能性的。整条通道置空，等于告诉 App「这次没有任何可投的」，外层 `code/message` 完整保留，不会触发错误分支。
+
+> 用 `python tools/analyze_har.py 抓包.har --scenes` 可以随时把当下的 sceneKey 全列出来，
+> 哪个场景的 `data` 不是空的，哪个就是还在给你下发广告的。
 
 ---
 
-## 三、真正的广告在哪：首页 60 张卡
+## 三、启动时真正会弹出来的，是「新人弹窗」
+
+冷启动第 4 个业务请求（比首页内容还早）就是它：
+
+```json
+POST https://lop-proxy.jd.com//home/queryNewPersonSceneDisplayContent
+→ {"code":1,"content":{
+     "businessLine": 2,
+     "contentDTO": {
+       "contentTitle": "新人弹窗-快运-8折",
+       "resCode": "pos00075",
+       "srcUrl": "https://jdl-cms-pro.s3-cache-accelerate.cn-north-1.jdcloud-oss.com/image-1750654981670.png",
+       "link": "https://jingcai-h5.jd.com/#/newCoupon?promoterId=...&source=xiaogeAPPyingxiao",
+       "extDisplayMap": {"kyDiscountRatio":"0.7","showUpNumber":"1","parentGroup":"1"}
+     },
+     "isNewPerson": true
+   },
+   "data": {"$ref": "$.content"}}
+```
+
+一整屏图片，点「领取」跳 `jingcai-h5` 领券页。它是**独立接口，不走决策通道**，所以 A 级规则管不到它 —— v1 漏掉的就是这一条。
+
+处置：把 `content.contentDTO` 置 `null`，保留 `businessLine` / `isNewPerson` / `couponDetail`。App 拿到 nil 就不渲染，外层结构完整。
+
+实测：`839B → 193B`。
+
+> 注意 `data` 用的是 `{"$ref":"$.content"}` 这种 JSON 引用语法，App 侧会做解析。
+> 所以不要删 `content` 本身，只挖掉里面那个渲染节点。
+
+---
+
+## 四、首页 60 张卡：广告主战场
 
 `getHomePageFeedCards` 返回 `content.title = "为您推荐"`、`desc = "优惠好价天天享"`，一次 60 张卡：
 
 | 数量 | 子对象 | 是什么 | 处置 |
 | --- | --- | --- | --- |
 | 46 | `freeRightCard` | 「权益免费领」—— 腾讯视频 8.3 折月卡这类第三方联合会员，跳 `jingcai-h5.jd.com#/receiveRights` | **删** |
-| 8 | `couponPackageCard` | 「超值券包」付费券包推销（1.9 元抵 210 元） | 保留 |
+| 8 | `couponPackageCard` | 「超值券包」付费券包推销（1.9 元抵 210 元） | 保留（想删用 D12） |
 | 4 | `saleCard` | 快递年卡·PLUS联名 / 寄件省钱卡 / 亲情卡 / E卡 | 保留 |
 | 2 | `retailProductCard` | 「零售商品」—— 桌游、玩具，跳 `djg.jd.com` 京东商城 | **删** |
 
@@ -87,58 +157,87 @@
 
 `cardType` 是后端排版的枚举，改版会重排；而 `retailProductCard` / `freeRightCard` 是**客户端渲染器认的字段名**，要改就必须同时改客户端，反而更稳定。
 
-实测：`60 张 → 12 张`，响应体 `24976B → 4373B`。
+实测：`60 张 → 12 张`，`24976B → 4373B`。开了 D12（连券包一起删）是 `12 张 → 4 张`，`4373B → 1605B`。
 
 ---
 
-## 四、投放决策：广告的总闸
+## 五、冷启动里新发现的商业化接口
 
-```
-POST https://lop-proxy.jd.com//decision
-[{"sceneKey":"jdl_home_feed_fwj_card","latLongitude":{...},"deviceInfo":{...}}]
-→ {"code":0,"data":[],"message":"SUCCESS","traceId":"..."}
+| 接口 | 大小 | 内容 | 级别 |
+| --- | --- | --- | --- |
+| `//home/queryNewPersonSceneDisplayContent` | 840B | 新人弹窗-快运-8折 | **A2，默认开** |
+| `ContentApi/queryContentInfo` | 142B | 京彩 tab 红点气泡（`jingcai-home-tab-bubble`：免费领 / 上新） | D8 |
+| `MissionApi/queryHomePageConfig` | 357B | 首页模块总开关（banner / 券包 / 秒杀卡 / 积分商城 / 京豆 / 活动区） | D9 |
+| `getJDTrialList` | 880B | 试用福袋（1 分钱奶粉 / 避孕套），跳 `pro.m.jd.com` 京东商城活动页 | D10 |
+| `saleProductApiService/getProductListNew` | 3.3KB | 年卡 / 亲情卡 / E 卡售卖，8 个付费产品 | D11 |
+| `rightsmall/queryRightsListByMarketingPlacementId` | 3.6KB | 京豆兑券活动（**不算广告，没做规则**） | — |
+
+`ContentApi/queryContentInfo` 一个接口供着多个 contentCode（还有 `jingcai-share-card-info` 分享卡片），所以 D8 那条规则按 `contentCode` 精准命中，只把气泡文案置空，别的内容原样放过。
+
+---
+
+## 六、投放决策：数据长什么样
+
+A 样本里 `//decision` 有一条 5.3KB 的响应（`sceneKey=jdl_home_feed_card`），能看到完整投放结构：
+
+```json
+{"code":0,"data":[
+  {"action": {
+     "image": "https://riskimg.360buyimg.com/pop/jfs/t1/541647/23/9614/...png",
+     "materialDisplayTemplate": "1",
+     "url": "https://pro.m.jd.com/mall/active/3BRUbAnH8KTdyiC3nnFy3i7gBJ9J/index.html?c=26shuang11appbanner"
+   },
+   "nodeId": "2111085587338366977",
+   "strategyId": "2111085587338366978",
+   "trackInfo": {"materialId":"...","sceneId":"2014324799207116800","source":1},
+   "virtualHeat": 1446974.87}
+]}
 ```
 
-```
-POST https://lop-proxy.jd.com/smartmp/querySmartDecision
-[{"sceneKey":"h5_rece_card_banner","extendParams":{"source":"JDLAPP"}}]
-→ {"code":0,"data":[],"message":"SUCCESS","traceId":"..."}
-```
-
-本次抓包里这两条**返回的都是空 data**（用户没被投放命中），所以看不到广告 payload 长什么样。但接口本身是标准投放通道：设备信息（idfa / oaid / 屏幕 / 机型 / 网络）全在请求体里，只有广告平台才需要这么全的画像。
+字段名直接就是投放术语：`strategyId`（策略）、`materialId`（素材）、`sceneId`（场景）、`virtualHeat`（虚拟热度）。
 
 处置：`.data=[]`。比拦域名精准 —— 因为它是业务域名，拦了就断全站。
 
 ---
 
-## 五、不改的东西（以及为什么）
+## 七、不改的东西（以及为什么）
 
 | 接口 / 字段 | 看起来像 | 为什么不动 |
 | --- | --- | --- |
 | `queryMoreFeaturesSectionsNew` | 一堆 banner/卡片 | 是**特色寄件功能入口**（寄生鲜 / 寄港澳 / 寄国际 / 雪具寄），删了功能就没了 |
-| `//queryHomeMainInfo` 的 `homeTeseji` | 「特色寄机」运营位 | 同上，功能位 |
-| `//queryHomeMainInfo` 的 `homeNotice` | 营运位 | 是公告，不是广告 |
+| `//queryHomeMainInfo` 的 `homeTeseji` / `homeGongneng` | 「特色寄机」运营位 | 同上，功能位 |
+| `//queryHomeMainInfo` 的 `homeNotice` | 运营位 | 是公告，不是广告 |
 | `//moduleList` 的 `myAssets` / `myWallet` | 我的页一堆入口 | 是资产和钱包，删了看不到余额 |
+| `/explore` | 名字像「发现」 | 实际是**地址 POI 搜索**（返回酒店/小区/楼栋），寄件选地址要用 |
+| `//home/queryHomeToDoInformationNew` | 名字像运营 | 是待办/运单提醒 |
 | `jra.jd.com` / `sdkfp.jd.com` | 可疑上报 | 风控指纹，拦了有触发风控的风险 |
 | `wlogin.m.jd.com` / `un.m.jd.com` | 跳转 | 登录链路 |
 
 ---
 
-## 六、本次没覆盖到的
+## 八、永远改不了的（别白费力气）
 
-1. **开屏广告**：抓包时 App 已在后台，没有冷启动，所以没有开屏接口样本。如果实际使用中还有开屏，需要**杀掉 App 后立刻开始抓包**再走一遍冷启动，然后 `--map` 找新出现的接口。
-2. **加密响应**：`queryHomePageOrders`、`searchOrderEnhance`、`familyCard/getUserInfoEnhance` 的响应是密文（AES），Loon 改不了，插件也不会去碰。
-3. **到家店铺广告**：`api.m.jd.com/client.action?functionId=hours_pub_store_page` 的 `storeList[*].commonSrvMap.isAd` 是竞价广告标记，但本次样本里 **10 家店全是 `isAd=0`**，没有实际广告可验证。插件里给了预防性规则，默认关闭。
+| 接口 | 大小 | 原因 |
+| --- | --- | --- |
+| `/order/searchOrderEnhance` | 321KB | 响应是 AES 密文 |
+| `//queryHomePageOrders` | 92.7KB | 响应是 AES 密文 |
+| `/familyCard/getUserInfoEnhance` | — | 加密 |
+| `sgm-m.jd.com/ios` | — | 请求响应双加密（营销埋点，纯上报） |
+
+Loon 的 jq 只处理明文 JSON。这几个接口哪怕里面真夹了广告卡，也动不了。
 
 ---
 
-## 七、复现方式
+## 九、复现方式
 
 ```bash
 python tools/analyze_har.py 抓包.har --check    # MITM 是否真在解密
 python tools/analyze_har.py 抓包.har --map      # 接口地图（解码 base64 请求体）
 python tools/analyze_har.py 抓包.har --feeds    # 首页卡片类型统计
+python tools/analyze_har.py 抓包.har --scenes   # 投放决策的 sceneKey（开屏在哪）
 python tools/analyze_har.py 抓包.har --verify   # 把插件规则跑一遍，看前后变化
 ```
 
 `--verify` 是核心：它直接读 `JDKDAds.plugin` 里启用的 `response-body-json-jq` 行，对 HAR 里命中的响应逐条执行 jq，输出字节数和卡片数变化。**规则改完必须跑一遍**，光看语法对不对没用。
+
+`--scenes` 是 v2 新加的：把 `//decision` 和 `querySmartDecision` 请求体里的 `sceneKey` 全挖出来，并标出每个场景这次的 `data` 是不是空的。开屏会排在第一行。

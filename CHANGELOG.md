@@ -1,5 +1,83 @@
 # 变更记录
 
+## v2 — 2026-10-31
+
+补上开屏。新增第二次抓包作为对照：**冷启动 1001 条请求 / 44 域名**（已装 v1 插件），
+和 v1 的基线样本（674 条 / 34 域名，未装插件）形成 A/B。
+
+### 开屏的真相
+
+开屏**没有独立接口**，它和首页推荐流插卡共用同一个投放决策接口，靠请求体里的 `sceneKey` 区分：
+
+```
+POST https://lop-proxy.jd.com//decision
+[{"sceneKey":"jdl_splash_screen","deviceInfo":{...},"applicationInfo":{...}}]
+```
+
+前后对照：
+
+| 样本 | `jdl_splash_screen` 的响应 | 结果 |
+|---|---|---|
+| 没装插件 | `data[1]`，557B | 下发了一条 555KB 的双 11 会场大图（`riskimg.360buyimg.com`） |
+| 装了插件 | `data[]`，85B | 什么都没下发，`riskimg` 请求数 0 |
+
+也就是说 v1 的 A 级规则**其实已经挡住了开屏**，只是当时没有冷启动样本可以证明。
+
+两次抓包合并共 15 个 `sceneKey`：`//decision` 5 个（开屏 / 福利 tab 弹窗 / 首页弹窗 / 推荐流插卡 / 推荐流服务加卡），
+`smartmp/querySmartDecision` 10 个（搜索框气泡、搜索页 banner、寄件收件卡片 banner、运单详情页 banner 等）。
+规则只能匹配 URL、匹配不到请求体，所以做不到「只杀开屏、留别的」—— 好在这 15 个场景全是商业投放，整体置空即可。
+
+### 新增：A2 启动新人弹窗（默认开启）
+
+v1 真正漏掉的是这条，不是开屏。冷启动第 4 个请求就返回一整屏「新人弹窗-快运-8折」图片，
+点「领取」跳 `jingcai-h5` 领券页。它是独立接口，不走决策通道，所以 A 级规则管不到。
+
+```
+//home/queryNewPersonSceneDisplayContent → content.contentDTO 置 null
+840B → 193B
+```
+
+保留 `businessLine` / `isNewPerson` / `couponDetail`，只挖掉渲染器依赖的那个节点。
+少数版本若不保护 nil 导致空白弹窗，把该行注释掉即可。
+
+### 规则健壮性
+
+A 级的两个决策接口改成双分支：
+
+```jq
+if (.data|type)=="array" then .data=[] elif (.data|type)=="object" then .data={} else . end
+```
+
+v1 只处理数组。后端一旦把 `data` 改成对象，旧规则会静默失效 —— jq 不报错，你不会知道它没生效。
+
+### 新增可选规则（D8–D12，默认关闭）
+
+- D8 京彩 tab 红点气泡（`ContentApi/queryContentInfo`，按 `contentCode` 精准命中，不误伤同接口的分享卡片）
+- D9 首页模块总开关（`MissionApi/queryHomePageConfig`，banner / 券包 / 秒杀卡 / 积分商城 / 京豆 / 活动区强制 false）
+- D10 试用福袋（`getJDTrialList`，1 分钱奶粉 / 避孕套，京东商城导购）
+- D11 年卡售卖页（`saleProductApiService/getProductListNew`，8 个付费产品）
+- D12 推荐流连券包一起删（12 张 → 4 张，4373B → 1605B）
+
+### 新增可选兜底：广告素材 CDN
+
+`riskimg.360buyimg.com` 在两次抓包里只被广告接口引用，没有一条业务图走它；
+基线样本里它下了 4 张图共 1.1MB。装上插件后一次都没被请求。
+`DOMAIN,riskimg.360buyimg.com,REJECT` 默认关闭，属防回归。
+
+### 工具
+
+- 新增 `--scenes`：把 `//decision` 和 `querySmartDecision` 请求体里的 `sceneKey` 全挖出来，
+  标出每个场景这次的 `data` 是否为空。开屏永远排第一行
+- `--verify` 支持多轮回归：v2 的 5 条规则在冷启动样本上 20 条命中、0 失败；
+  在 v1 基线样本上 17 条命中、0 失败
+
+### 冷启动里排掉的两个误判
+
+- `/explore` 名字像「发现」，实际是**地址 POI 搜索**（返回酒店 / 小区 / 楼栋），寄件选地址要用 —— 不动
+- `rightsmall/queryRightsListByMarketingPlacementId` 是**京豆兑券**活动，属于用户权益不是广告 —— 不做规则
+
+---
+
 ## v1 — 2026-10-31
 
 首个版本。基于京东快递 `1.7.7`（iOS 27.0.1）真机抓包，样本 674 条请求 / 34 个域名 / 246 条京东业务域。

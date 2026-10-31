@@ -1,5 +1,5 @@
 #!name=京东快递 去广告
-#!desc=v1。基于京东快递 1.7.7（iOS）真机抓包 674 条请求分析。首页「为您推荐」瀑布流里 60 张卡有 46 张是第三方联合会员广告，另有零售商品导购卡；本插件按卡片类型定点删除，并置空投放决策接口。需开启 MITM 并信任证书。
+#!desc=v2。基于京东快递 1.7.7（iOS）两次真机抓包：常驻使用 674 条 + 冷启动 1001 条。开屏广告走投放决策接口 sceneKey=jdl_splash_screen，首页「为您推荐」60 张卡里 46 张是第三方联合会员、启动时另弹一个「新人弹窗」。本插件按场景与字段定点清除，需开启 MITM 并信任证书。
 #!author=UserC23
 #!homepage=https://github.com/UserC23/jdkdads-loon
 #!date=2026-10-31
@@ -9,35 +9,57 @@
 # 这份插件为什么长这样（先看结论，再决定开哪几段）
 #
 #   抓包结论一：京东快递没有用第三方广告 SDK。
-#     674 条请求全部落在 jd.com / jdl.com / 360buyimg.com 自有域名下，
-#     没有 1RTB、穿山甲、TanX 之类的影子。所以「按域名拦广告」这条路
-#     在这里是空的 —— 域名层没有敌人，广告全在业务接口的 JSON 里。
+#     两次抓包共 1675 条请求，全部落在 jd.com / jdl.com / 360buyimg.com
+#     自有域名下，没有 1RTB、穿山甲、TanX 之类的影子。所以「按域名拦广告」
+#     这条路在这里是空的 —— 域名层没有敌人，广告全在业务接口的 JSON 里。
 #
-#   抓包结论二：真正的广告位是首页那个「为您推荐」瀑布流。
-#     接口 lop-proxy.jd.com/getHomePageFeedCards 一次返回 60 张卡：
-#       46 张 权益免费领  cardType=6  第三方联合会员（腾讯视频 8.3 折…）
-#        8 张 超值券包    cardType=1  付费券包推销
-#        4 张 年卡/亲情卡 cardType=2/3/4/5  自家付费产品
-#        2 张 零售商品    cardType=7  跳 djg.jd.com 京东商城导购
-#     前两类和第四类才是刷屏的广告，插件默认删掉的正是这三类里的
-#     「权益免费领 + 零售商品」（60 → 12 张），只留自家快递卡券。
+#   抓包结论二：开屏广告不是独立接口，是投放决策接口的一个场景。
+#     lop-proxy.jd.com//decision 的请求体里带 sceneKey，冷启动抓到 5 个：
+#       jdl_splash_screen          开屏  ← 就是它
+#       app_jdkd_tab_benefit_popup 底部「福利」tab 弹窗
+#       app_jdkd_home_popup        首页弹窗
+#       jdl_home_feed_card         首页推荐流插卡
+#       jdl_home_feed_fwj_card     首页推荐流服务加卡片
+#     另一个决策通道 smartmp/querySmartDecision 另有 10 个场景
+#     （搜索框气泡 / 搜索页 banner / 寄件收件卡片 banner 等）。
+#     这两个接口是广告下发的总闸，把 data 置空 = 「本次无广告可投」。
 #
-#   抓包结论三：还有一条专门做投放的决策通道。
-#     lop-proxy.jd.com//decision           sceneKey=jdl_home_feed_fwj_card
-#     lop-proxy.jd.com/smartmp/querySmartDecision  sceneKey=h5_rece_card_banner
-#     这两个接口本次都返回空 data（没投中），但它是广告下发的总闸。
-#     置空 data 等于告诉 App「这次没有可投的」，比拦域名精准得多。
+#     实测对照（同一个账号，前后两次抓包）：
+#       没装插件  jdl_splash_screen → data[1]，557B，一条 555KB 的
+#                 双 11 会场大图（riskimg.360buyimg.com）
+#       装了插件  jdl_splash_screen → data[]，85B，什么都没有
+#     这是这份插件最直接的一次 A/B。
 #
-#   抓包结论四：不能整包 reject。
-#     京东这套接口统一是 {"code":1,"content":{...},"success":true}，
-#     整包返回 {} 会让 App 走进错误分支（弹提示 / 一直重试）。
+#   抓包结论三：启动时真正会弹出来的，是「新人弹窗」。
+#     //home/queryNewPersonSceneDisplayContent 返回一整屏图片 + 领券链接
+#     （本次抓到的是「新人弹窗-快运-8折」，跳 jingcai-h5 领券）。
+#     它是独立接口，不走决策通道，所以 A 级规则管不到它，要单独处理（A2）。
+#
+#   抓包结论四：首页「为您推荐」瀑布流是广告主战场。
+#     getHomePageFeedCards 一次返回 60 张卡：
+#       46 张 权益免费领  freeRightCard        第三方联合会员（腾讯视频 8.3 折…）
+#        8 张 超值券包    couponPackageCard    付费券包推销
+#        4 张 年卡/亲情卡 saleCard             自家付费产品
+#        2 张 零售商品    retailProductCard    跳 djg.jd.com 京东商城导购
+#     默认删掉「权益免费领 + 零售商品」（60 → 12 张）。
+#
+#   抓包结论五：不能整包 reject。
+#     这套接口统一是 {"code":1,"content":{...},"success":true}，
+#     返回 {} 会让 App 走进错误分支（弹「网络开小差」/ 一直重试）。
 #     所以这里全部用 response-body-json-jq 就地改字段，保持外壳完整。
+#
+#   抓包结论六：有两个接口永远改不了，别白费力气。
+#     order/searchOrderEnhance（321KB）、queryHomePageOrders（92KB）
+#     响应体是 AES 密文，jq 解析不了，插件里刻意没有它们。
 #
 # 使用前提（缺一不可）
 #   1. Loon 里打开 MITM
 #   2. 装好证书，并在「设置 → 通用 → 关于本机 → 证书信任设置」里
 #      打开完全信任（只在「VPN与设备管理」里装了不算）
 #   3. 京东快递 App 上滑彻底杀掉再重开（响应有缓存，切后台不生效）
+#
+# 仍然看到开屏？说明是上次启动缓存在本地的旧素材（决策接口已返回空，
+# 不会再下发新素材）。把 App 杀掉重开一到两次，或清一次 App 缓存即可。
 # ─────────────────────────────────────────────────────────────
 
 [MITM]
@@ -52,12 +74,41 @@ hostname = lop-proxy.jd.com
 [Rewrite]
 # ═════════════════════════════════════════════════════════════
 # A 级｜投放决策通道 —— 默认开启，收益最大、风险最小
+#
+# 这两个接口就是广告下发的总闸，开屏也在里面（sceneKey=jdl_splash_screen）。
+# 规则不能匹配请求体里的 sceneKey，但也不需要匹配 —— 整条通道的 15 个
+# 场景全都是商业投放，无一例外，整体置空即可。
+#
 # 把 data 置成空数组，App 认为「本次无广告可投」，
 # 外层 code/message 都保留，不会触发错误分支。
+#
+# 双分支写法：data 是数组就置 []，是对象就置 {}。
+# 单写 [] 的版本在老插件里跑了一年没问题，但一旦后端把 data 改成
+# 对象结构，规则会静默失效 —— 而 jq 不会报错，你不会知道它没生效。
 # ═════════════════════════════════════════════════════════════
 
-^https?://lop-proxy\.jd\.com/+decision response-body-json-jq 'if (.data|type)=="array" then .data=[] else . end'
-^https?://lop-proxy\.jd\.com/smartmp/querySmartDecision response-body-json-jq 'if (.data|type)=="array" then .data=[] else . end'
+^https?://lop-proxy\.jd\.com/+decision response-body-json-jq 'if (.data|type)=="array" then .data=[] elif (.data|type)=="object" then .data={} else . end'
+^https?://lop-proxy\.jd\.com/smartmp/querySmartDecision response-body-json-jq 'if (.data|type)=="array" then .data=[] elif (.data|type)=="object" then .data={} else . end'
+
+# ═════════════════════════════════════════════════════════════
+# A2 级｜启动「新人弹窗」—— 默认开启
+#
+# 这条不是开屏，但观感和开屏一样：冷启动后立刻盖上来一整屏图片，
+# 点「领取」跳到 jingcai-h5 的领券页。本次抓到的素材是
+# 「新人弹窗-快运-8折」，resCode=pos00075。
+#
+# 处理方式是把 content.contentDTO 置 null。
+# 保留 content.businessLine / isNewPerson / couponDetail，
+# 只挖掉渲染器真正依赖的那个节点 —— App 拿到 nil 就不渲染弹窗，
+# 而外层结构完整，不会走错误分支。
+#
+# 实测：响应体 839B → 193B。
+#
+# ⚠️ 万一你那边开屏后出现一个空白弹窗（极少数版本对 nil 没做保护），
+#    把下面这一行前面加 # 即可，其余规则不受影响。
+# ═════════════════════════════════════════════════════════════
+
+^https?://lop-proxy\.jd\.com/+home/queryNewPersonSceneDisplayContent response-body-json-jq 'if (.content|type)=="object" then .content.contentDTO=null else . end'
 
 # ═════════════════════════════════════════════════════════════
 # B 级｜首页「为您推荐」瀑布流 —— 默认开启
@@ -71,7 +122,8 @@ hostname = lop-proxy.jd.com
 #   其余（券包/年卡/E卡/亲情卡）保留，因为那是京东快递自家的
 #   付费产品，不是第三方广告，有人确实要用。
 #
-# 实测：60 张 → 12 张，响应体 24.9KB → 4.4KB
+# 实测：60 张 → 12 张，响应体 26.3KB → 4.4KB
+# 想连券包一起删，用下面 D12。
 # ═════════════════════════════════════════════════════════════
 
 ^https?://lop-proxy\.jd\.com/getHomePageFeedCards response-body-json-jq 'if (.content.cardList|type)=="array" then .content.cardList |= map(select(((type=="object" and (has("retailProductCard") or has("freeRightCard")))|not))) else . end'
@@ -86,7 +138,7 @@ hostname = lop-proxy.jd.com
 #   homeTeseji  特色寄件（寄生鲜/寄港澳，是功能入口）
 #   homeGongneng 功能区
 #   homeNotice  公告
-# 本次抓包里它们都是空数组，删不删没区别；但线上随时会下发真实内容，
+# 两次抓包里它们都是空数组，删不删没区别；但线上随时会下发真实内容，
 # 而那不是广告，删了属于误伤。
 # ═════════════════════════════════════════════════════════════
 
@@ -102,7 +154,8 @@ hostname = lop-proxy.jd.com
 #     清空后这一排入口直接消失。想留功能入口就别开。
 # ^https?://lop-proxy\.jd\.com/+moduleList response-body-json-jq 'if (.content|type)=="object" then .content.minePromotion=[] else . end'
 
-# D2. 京彩 tab 的活动 banner（拼团助力失败 banner / 积分夺宝）
+# D2. 京彩 tab 的活动 banner（拼团助力失败 banner / 京豆夺宝 / 积分夺宝）
+#     冷启动抓到 2 条，全跳 jingcai-h5 的夺宝页。
 # ^https?://lop-proxy\.jd\.com/program/findTestBanners response-body-json-jq 'if (.data|type)=="object" then .data.itemList=[] else . end'
 
 # D3. 秒杀列表（0.01 元快递券那排）
@@ -110,6 +163,7 @@ hostname = lop-proxy.jd.com
 # ^https?://lop-proxy\.jd\.com/flashsale/flashSaleList response-body-json-jq 'if (.content|type)=="array" then .content=[] else . end'
 
 # D4. 第三方联合会员权益（腾讯视频 / 爱奇艺 那一整页）
+#     冷启动抓到 33 条，全是第三方会员折扣券。
 # ^https?://lop-proxy\.jd\.com/thirdPartyRights/rightsList response-body-json-jq 'if (.content|type)=="object" then .content.thirdPartyRight=[] else . end'
 
 # D5. 服务加购推荐流（空调维修 / 加氟 / 冰箱检测）
@@ -121,24 +175,50 @@ hostname = lop-proxy.jd.com
 # ^https?://lop-proxy\.jd\.com/getHomePageFeedCards response-body-json-jq 'if (.content.cardList|type)=="array" then .content.cardList=[] else . end'
 
 # D7. 到家（小时达）店铺列表里的竞价广告店
-#     抓包里 isAd 全是 0，没有实际样本，属于预防性规则。
+#     两次抓包里 isAd 全是 0，没有实际样本，属于预防性规则。
 #     启用前必须把 api.m.jd.com 加进上面的 [MITM] hostname。
 # ^https?://api\.m\.jd\.com/client\.action\?functionId=hours_pub_store_page response-body-json-jq 'if (.result.data|type)=="array" then .result.data |= map(if (.data|type)=="array" then .data |= map(if (.storeList|type)=="array" then .storeList |= map(select(((.commonSrvMap.isAd // 0)|tostring) != "1")) else . end) else . end) else . end'
 
+# D8. 京彩 tab 上的红点气泡（「免费领」「上新」）
+#     按 contentCode 精准命中，同一个接口还供着分享卡片信息，
+#     所以不能整包清空 —— 这里只把气泡文案置空，别的内容原样放过。
+#     实测：content 从 {"getGifts":"免费领","earnJingBeans":"上新"} 变成全空串。
+# ^https?://lop-proxy\.jd\.com/ContentApi/queryContentInfo response-body-json-jq 'if (.data.contentCode // "")=="jingcai-home-tab-bubble" then .data.content |= (fromjson? // {} | with_entries(.value="") | tojson) else . end'
+
+# D9. 首页模块总开关（banner / 券包 / 秒杀卡 / 积分商城 / 京豆 / 活动区）
+#     MissionApi/queryHomePageConfig 下发的是一组开关，服务端这次给的
+#     全是 false。这里强制按 false 走 —— 后端哪天全打开，你就全看见了。
+#     代价同上：这些模块会从首页消失，不是空白就是没有入口。
+# ^https?://lop-proxy\.jd\.com/MissionApi/queryHomePageConfig response-body-json-jq 'if (.content|type)=="object" then .content.isShowHomePageConfigInfo=false | .content.moduleConfigInfo |= (with_entries(.value=false)) | .content.activityConfigInfo.spellGroupPowerShowSwitch=false else . end'
+
+# D10. 试用福袋（1 分钱奶粉 / 避孕套那种京东商城导购）
+#      这是快递 App 里嵌的京东商城模块，和寄件毫无关系。
+# ^https?://lop-proxy\.jd\.com/getJDTrialList response-body-json-jq 'if (.content.itemList|type)=="array" then .content.itemList=[] else . end'
+
+# D11. 年卡 / 亲情卡 / E 卡 售卖列表（8 个付费产品）
+#      这是京东快递自家的付费产品，B 级里刻意保留了推荐流里的同类卡片，
+#      开这条等于把这个售卖页也清空。想买卡别开。
+# ^https?://lop-proxy\.jd\.com/saleProductApiService/getProductListNew response-body-json-jq 'if (.content|type)=="array" then .content=[] else . end'
+
+# D12. 推荐流连「超值券包」一起删（比 B 级更狠）
+#      实测：12 张 → 4 张，只剩年卡/亲情卡/E 卡，响应体 4.4KB → 1.6KB。
+#      开了这条就不需要 B 级，两条同时开结果一样（幂等）。
+# ^https?://lop-proxy\.jd\.com/getHomePageFeedCards response-body-json-jq 'if (.content.cardList|type)=="array" then .content.cardList |= map(select(((type=="object" and (has("retailProductCard") or has("freeRightCard") or has("couponPackageCard")))|not))) else . end'
+
 [Rule]
 # ═════════════════════════════════════════════════════════════
-# 域名层：本次抓包没有可拦的广告域名
+# 域名层：除了只放广告素材的 riskimg，没有可拦的域名
 #
-# 674 条请求里没有一条是第三方广告 SDK。京东快递的广告是自己家的
+# 1675 条请求里没有一条是第三方广告 SDK。京东快递的广告是自己家的
 # 广告平台（京准通）通过 lop-proxy 下发的 JSON，走的是业务域名，
-# 拦域名等于拦业务，所以这一段故意留空。
+# 拦域名等于拦业务，所以这一段默认留空。
 #
-# 下面几条是「埋点瘦身」，不是去广告。抓包里 saturn.jd.com/log/sdk
-# 一家就占了 203 条请求（占总量 30%），纯上报、不拦也不影响功能。
+# 下面几条是「埋点瘦身」，不是去广告。冷启动抓包里 saturn.jd.com/log/sdk
+# 一家就占了 346 条请求（占总量 35%），纯上报、不拦也不影响功能。
 # 介意耗电/流量的可以打开，介意统计口径的别动。
 # ═════════════════════════════════════════════════════════════
 
-# 京东埋点主网关（203 条 / 本次抓包最大噪音源）
+# 京东埋点主网关（346 条 / 冷启动最大噪音源）
 # DOMAIN,saturn.jd.com,REJECT
 # 行为上报
 # DOMAIN,cactus.jd.com,REJECT
@@ -146,6 +226,25 @@ hostname = lop-proxy.jd.com
 # DOMAIN,blackhole.m.jd.com,REJECT
 # 营销埋点（sgm）
 # DOMAIN,sgm-w.jd.com,REJECT
+# H5 速度上报
+# DOMAIN,h5speed.m.jd.com,REJECT
+
+# ═════════════════════════════════════════════════════════════
+# 可选兜底：广告素材 CDN
+#
+# riskimg.360buyimg.com 在两次抓包里只被广告接口引用
+# （//decision、querySmartDecision、thirdPartyRights、flashSaleList、
+#  getHomePageFeedCards、familyCard），没有一条业务图走它。
+# 那次没装插件的抓包里，它一口气下了 4 张图共 1.1MB：
+#   533KB / 423KB / 83KB / 64KB —— 全是投放素材。
+#
+# 装上本插件后它一次都没被请求（决策接口已经返回空，App 没有素材可拉），
+# 所以这条默认关闭，属于「防回归」：万一哪天京东换了个客户端入口
+# 绕过决策接口直接下发图片，这里还能挡一道。
+#
+# 开这条的代价：券包 / 年卡这类还留着的卡片，如果哪天图床也搬到
+# riskimg 上，会显示成空白图。介意就别开。
+# DOMAIN,riskimg.360buyimg.com,REJECT
 
 # ═════════════════════════════════════════════════════════════
 # 明确不拦
@@ -154,6 +253,6 @@ hostname = lop-proxy.jd.com
 #   wlogin.m.jd.com       登录
 #   un.m.jd.com           账号跳转
 #   wlmonitor.m.jd.com    登录监控
-#   sgm-m.jd.com          埋点配置下发（拦了可能连带活动页异常）
+#   sgm-m.jd.com          埋点配置下发（加密串，拦了可能连带活动页异常）
 # 拦指纹类域名有触发风控的风险，收益为零。
 # ═════════════════════════════════════════════════════════════

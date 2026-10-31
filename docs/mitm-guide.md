@@ -113,8 +113,11 @@ else . end
 - 在**有广告的那个页面**停留 15~30 秒，瀑布流滑到底
 - 导出 HAR
 
-> 想抓开屏广告必须**先开抓包再冷启动 App**。本次基线抓包没抓到开屏，
-> 就是因为抓包时 App 已经在后台了。
+> 想抓开屏广告必须**先开抓包再冷启动 App**。开屏不是独立接口，它是
+> `//decision` 的一个 `sceneKey`，`--scenes` 能直接把它指出来。
+>
+> 冷启动样本已经补齐了（v2）：开屏素材是 `riskimg.360buyimg.com` 上一张 555KB 的
+> 双 11 会场大图。如果哪天换了个投放形式，重新抓一次冷启动再跑 `--scenes` 就能看到。
 
 ### 2. 先看接口地图
 
@@ -136,8 +139,22 @@ python tools/analyze_har.py 抓包.har --map
 
 ```bash
 python tools/analyze_har.py 抓包.har --feeds      # 首页卡片都是什么类型
+python tools/analyze_har.py 抓包.har --scenes     # 投放决策的 sceneKey，开屏排第一
 python tools/analyze_har.py 抓包.har --scan-ads   # 哪些字段像广告位
 ```
+
+`--scenes` 是给弹窗/开屏/插卡这类「看不见的投放」用的：
+
+```
+=== 投放决策场景 15 个 ===
+
+  jdl_splash_screen   x1
+     开屏广告 ← 就是它
+     接口 //decision
+     响应 data[1]  ← 有投放          ← 这个状态就说明它正在给你下发
+```
+
+`data` 非空的场景就是当前还在投的。反之 `data=[]` 说明已经被插件挡下来了。
 
 `--feeds` 会把 `getHomePageFeedCards` 的卡片按子对象名分桶：
 
@@ -168,7 +185,7 @@ python tools/analyze_har.py 抓包.har --verify
 输出字节数变化：
 
 ```
---- 第 77 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
+--- 第 145 行  ^https?://lop-proxy\.jd\.com/getHomePageFeedCards
     ✓ /getHomePageFeedCards    24976B → 4373B (-20603)  卡片 60 → 12
 ```
 
